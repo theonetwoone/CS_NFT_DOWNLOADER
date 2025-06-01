@@ -491,6 +491,27 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
             log_callback(f"[ERROR] Error processing CSV: {str(e)}")
         return 0, 0, []
 
+# Function to detect if running on Streamlit Cloud
+def is_running_on_streamlit_cloud():
+    """Detect if the app is running on Streamlit Cloud"""
+    try:
+        # Check for common Streamlit Cloud environment indicators
+        import os
+        # Streamlit Cloud typically runs on Linux with specific environment variables
+        if os.environ.get('STREAMLIT_SERVER_HEADLESS') == 'true':
+            return True
+        # Check for typical Streamlit Cloud paths
+        if '/home/appuser' in os.path.expanduser("~"):
+            return True
+        # Check hostname patterns common in cloud environments
+        import socket
+        hostname = socket.gethostname()
+        if any(cloud_indicator in hostname.lower() for cloud_indicator in ['streamlit', 'cloud', 'heroku', 'render']):
+            return True
+    except:
+        pass
+    return False
+
 # Main application
 def main():
     # Set page config
@@ -503,10 +524,17 @@ def main():
     # Apply custom theme
     apply_cyber_skulls_theme()
     
+    # Detect environment
+    is_cloud = is_running_on_streamlit_cloud()
+    
     # Set up the page header
     col1, col2 = st.columns([4, 1])
     with col1:
         st.markdown('<h1 class="cyber-header">■ CYBER_SKULLS_NFT_DOWNLOADER</h1>', unsafe_allow_html=True)
+        if is_cloud:
+            st.markdown('<p style="color:#888888;font-size:12px;font-family:Courier;">🌐 RUNNING_ON_STREAMLIT_CLOUD</p>', unsafe_allow_html=True)
+        else:
+            st.markdown('<p style="color:#888888;font-size:12px;font-family:Courier;">💻 RUNNING_LOCALLY</p>', unsafe_allow_html=True)
     with col2:
         # Try to load the logo
         try:
@@ -527,46 +555,48 @@ def main():
         except Exception:
             st.text("[LOGO_NOT_FOUND]")
     
-    # Local version download section
-    st.markdown('<div class="cyber-box">', unsafe_allow_html=True)
-    st.markdown('<h3 class="cyber-header">■ LOCAL_VERSION_AVAILABLE</h3>', unsafe_allow_html=True)
-    
-    col1, col2, col3 = st.columns([1, 1, 1])
-    
-    with col1:
-        st.markdown('<p class="cyber-label">> DESKTOP_APPLICATION:</p>', unsafe_allow_html=True)
-        # Create local download link
-        local_download_link = create_local_download_link()
-        if local_download_link:
-            st.markdown(local_download_link, unsafe_allow_html=True)
-            st.markdown('<p style="color:#888888;font-size:10px;font-family:Courier;">Lightweight version (~25KB)</p>', unsafe_allow_html=True)
-        else:
-            st.markdown('<p style="color:#FF0000;">LOCAL VERSION UNAVAILABLE</p>', unsafe_allow_html=True)
-            st.markdown('<p style="color:#888888;font-size:10px;">Files too large or missing</p>', unsafe_allow_html=True)
-    
-    with col2:
-        st.markdown('<p class="cyber-label">> SOURCE_CODE:</p>', unsafe_allow_html=True)
-        github_link = '<a href="https://github.com/theonetwoone/CS_NFT_DOWNLOADER" target="_blank" style="text-decoration:none;"><button style="color:#00FF00;background-color:#111111;border:1px solid #00FF00;padding:8px 16px;font-family:\'Courier New\',monospace;cursor:pointer;">🔗 GITHUB_REPOSITORY</button></a>'
-        st.markdown(github_link, unsafe_allow_html=True)
-    
-    with col3:
-        st.markdown('<p class="cyber-label">> FEATURES_COMPARISON:</p>', unsafe_allow_html=True)
-        with st.expander("📋 LOCAL vs WEB", expanded=False):
-            st.markdown("""
-            **Local Desktop App:**
-            - ✅ Better performance
-            - ✅ No file size limits  
-            - ✅ Offline after download
-            - ✅ Multiple CSV support
-            
-            **Web Version:**
-            - ✅ No installation needed
-            - ✅ Works on any device
-            - ✅ Always up-to-date
-            - ⚠️ File size limitations
-            """)
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+    # Local version download section (only show on cloud)
+    if is_cloud:
+        st.markdown('<div class="cyber-box">', unsafe_allow_html=True)
+        st.markdown('<h3 class="cyber-header">■ LOCAL_VERSION_AVAILABLE</h3>', unsafe_allow_html=True)
+        st.info("💡 **Better Performance:** Download the desktop version for unlimited file sizes and faster processing!")
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        
+        with col1:
+            st.markdown('<p class="cyber-label">> DESKTOP_APPLICATION:</p>', unsafe_allow_html=True)
+            # Create local download link
+            local_download_link = create_local_download_link()
+            if local_download_link:
+                st.markdown(local_download_link, unsafe_allow_html=True)
+                st.markdown('<p style="color:#888888;font-size:10px;font-family:Courier;">No size limits • Faster downloads</p>', unsafe_allow_html=True)
+            else:
+                st.markdown('<p style="color:#FF0000;">LOCAL VERSION UNAVAILABLE</p>', unsafe_allow_html=True)
+                st.markdown('<p style="color:#888888;font-size:10px;">Files too large or missing</p>', unsafe_allow_html=True)
+        
+        with col2:
+            st.markdown('<p class="cyber-label">> SOURCE_CODE:</p>', unsafe_allow_html=True)
+            github_link = '<a href="https://github.com/theonetwoone/CS_NFT_DOWNLOADER" target="_blank" style="text-decoration:none;"><button style="color:#00FF00;background-color:#111111;border:1px solid #00FF00;padding:8px 16px;font-family:\'Courier New\',monospace;cursor:pointer;">🔗 GITHUB_REPOSITORY</button></a>'
+            st.markdown(github_link, unsafe_allow_html=True)
+        
+        with col3:
+            st.markdown('<p class="cyber-label">> FEATURES_COMPARISON:</p>', unsafe_allow_html=True)
+            with st.expander("📋 LOCAL vs CLOUD", expanded=False):
+                st.markdown("""
+                **Local Desktop App:**
+                - ✅ No file size limits  
+                - ✅ Direct folder access
+                - ✅ Faster downloads
+                - ✅ Works offline
+                
+                **Cloud Version:**
+                - ✅ No installation needed
+                - ✅ Works on any device
+                - ✅ Always up-to-date
+                - ⚠️ 200MB limit per download
+                """)
+        
+        st.markdown('</div>', unsafe_allow_html=True)
     
     st.markdown('<div class="cyber-box">', unsafe_allow_html=True)
     st.markdown('<h3 class="cyber-header">■ NETWORK_OPERATIONS</h3>', unsafe_allow_html=True)
@@ -598,16 +628,36 @@ def main():
     
     # Download mode selection
     st.markdown('<p class="cyber-label">> SELECT_DOWNLOAD_MODE:</p>', unsafe_allow_html=True)
-    download_mode = st.radio(
-        "Download Mode Selection",
-        ["Small Collection >200mb total (ZIP Download)", "Large Collection (Direct Folder)"],
-        label_visibility="collapsed"
-    )
+    
+    if is_cloud:
+        # On cloud, prefer ZIP mode and explain limitations
+        st.info("🌐 **Running on Streamlit Cloud:** Files are processed on the server. ZIP mode is recommended for collections under 200MB.")
+        download_mode = st.radio(
+            "Download Mode Selection",
+            ["Small Collection ≤200MB (ZIP Download)", "Large Collection (Server Processing)"],
+            help="ZIP mode downloads directly to your computer. Large collection mode processes files on the server (limited usefulness for cloud deployment).",
+            label_visibility="collapsed"
+        )
+    else:
+        # Local mode - show original options
+        download_mode = st.radio(
+            "Download Mode Selection",
+            ["Small Collection ≤200MB (ZIP Download)", "Large Collection (Direct Folder)"],
+            label_visibility="collapsed"
+        )
     
     # Output folder selection for direct mode
-    if download_mode == "Large Collection (Direct Folder)":
+    if "Large Collection" in download_mode:
         st.markdown('<p class="cyber-label">> OUTPUT_FOLDER:</p>', unsafe_allow_html=True)
-        output_folder = st.text_input("Output Folder Path", value=os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads"), 
+        
+        if is_cloud:
+            st.warning("⚠️ **Cloud Limitation:** Files will be saved on the server temporarily and cannot be directly accessed by you. Consider using ZIP mode instead.")
+            default_folder = "/tmp/IPFS_Downloads"
+            st.markdown('<p style="color:#888888;font-size:11px;font-family:Courier;">Note: This is a server path, not your local computer</p>', unsafe_allow_html=True)
+        else:
+            default_folder = os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads")
+        
+        output_folder = st.text_input("Output Folder Path", value=default_folder, 
                                     label_visibility="collapsed")
         
         # Display the selected path
@@ -656,7 +706,7 @@ def main():
     
     # Download link area
     download_link_placeholder = st.empty()
-    if st.session_state.download_complete and st.session_state.download_path and download_mode == "Small Collection >200mb total (ZIP Download)":
+    if st.session_state.download_complete and st.session_state.download_path and download_mode == "Small Collection ≤200MB (ZIP Download)":
         download_link = create_download_link(st.session_state.download_path)
         download_link_placeholder.markdown(download_link, unsafe_allow_html=True)
     
@@ -678,7 +728,7 @@ def main():
             df = pd.read_csv(StringIO(csv_data))
             
             # Set up the output directory based on download mode
-            if download_mode == "Small Collection >200mb total (ZIP Download)":
+            if download_mode == "Small Collection ≤200MB (ZIP Download)":
                 # Create a temporary directory for downloads
                 temp_dir = tempfile.mkdtemp()
                 output_dir = temp_dir
@@ -702,7 +752,7 @@ def main():
                 progress_bar.progress(progress_value)
             
             # Process CSV and download images (with or without batches)
-            if download_mode == "Small Collection >200mb total (ZIP Download)":
+            if download_mode == "Small Collection ≤200MB (ZIP Download)":
                 # Process without batches for small collections
                 success_count, fail_count, downloaded_files = process_csv_data_in_batches(
                     df, output_dir, gateway_url, 
