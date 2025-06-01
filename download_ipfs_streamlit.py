@@ -546,7 +546,7 @@ def main():
     
     with col2:
         st.markdown('<p class="cyber-label">> SOURCE_CODE:</p>', unsafe_allow_html=True)
-        github_link = '<a href="https://github.com/YOUR_USERNAME/cyber-skulls-nft-downloader" target="_blank" style="text-decoration:none;"><button style="color:#00FF00;background-color:#111111;border:1px solid #00FF00;padding:8px 16px;font-family:\'Courier New\',monospace;cursor:pointer;">🔗 GITHUB_REPOSITORY</button></a>'
+        github_link = '<a href="https://github.com/theonetwoone/CS_NFT_DOWNLOADER" target="_blank" style="text-decoration:none;"><button style="color:#00FF00;background-color:#111111;border:1px solid #00FF00;padding:8px 16px;font-family:\'Courier New\',monospace;cursor:pointer;">🔗 GITHUB_REPOSITORY</button></a>'
         st.markdown(github_link, unsafe_allow_html=True)
     
     with col3:
