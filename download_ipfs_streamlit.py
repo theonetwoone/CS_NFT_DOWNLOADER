@@ -420,12 +420,12 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
             if col not in df.columns:
                 if log_callback:
                     log_callback(f"[ERROR] CSV is missing required column: {col}")
-                return 0, 0, []
+                return 0, 0, [], []
         
         # Adjust batch size for cloud environments
         if is_cloud_env:
             # Use smaller batches in cloud to avoid timeouts
-            batch_size = min(batch_size, 10)
+            batch_size = min(batch_size, 15)
             if log_callback:
                 log_callback(f"[CLOUD] Adjusted batch size to {batch_size} for cloud environment")
         
@@ -434,6 +434,7 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
         fail_count = 0
         total_count = len(df)
         downloaded_files = []
+        file_data_list = []  # Store file data in memory for ZIP creation
         processed_count = 0
         
         if log_callback:
@@ -482,25 +483,26 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
                     elif "gif" in mime_type:
                         extension = ".gif"
                 
-                output_path = os.path.join(output_dir, f"{safe_name}{extension}")
+                filename = f"{safe_name}{extension}"
+                output_path = os.path.join(output_dir, filename)
                 
-                # Download the image with cloud environment flag
-                success = download_image(url, output_path, gateway_url, log_callback, is_cloud_env)
-                if success:
+                # Download the image and store in memory for web apps
+                file_data = download_image_to_memory(url, gateway_url, log_callback, is_cloud_env)
+                if file_data:
                     success_count += 1
                     downloaded_files.append(output_path)
+                    file_data_list.append((filename, file_data))
+                    if log_callback:
+                        log_callback(f"[SUCCESS] Downloaded: {filename}")
                 else:
                     fail_count += 1
-                    # In cloud environment, add more aggressive error recovery
-                    if is_cloud_env and fail_count > 3:
+                    if is_cloud_env and fail_count > 5:
                         if log_callback:
                             log_callback(f"[CLOUD_WARNING] Multiple failures detected. This may be due to cloud resource limits.")
             
             # Log batch completion with current stats
             if log_callback:
                 log_callback(f"[BATCH_COMPLETE] Batch {batch_start//batch_size + 1} finished. Success: {success_count}, Failed: {fail_count}")
-                if not is_cloud_env:
-                    log_callback(f"[SYSTEM] Files saved to local folder: {output_dir}")
             
             # Allow a longer pause between batches in cloud environment
             pause_time = 1.0 if is_cloud_env else 0.2
@@ -509,11 +511,172 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
         if log_callback:
             log_callback(f"[ALL_BATCHES_COMPLETE] All {total_count} items processed")
             
-        return success_count, fail_count, downloaded_files
+        return success_count, fail_count, downloaded_files, file_data_list
     except Exception as e:
         if log_callback:
             log_callback(f"[ERROR] Error processing CSV: {str(e)}")
-        return 0, 0, []
+        return 0, 0, [], []
+
+# Function to download an image to memory instead of disk
+def download_image_to_memory(url, gateway_url, log_callback=None, is_cloud_env=False):
+    try:
+        # Parse IPFS URL to extract CID
+        if url.startswith("ipfs://"):
+            # Extract the CID and handle any fragment identifier
+            path = url[7:]  # Remove 'ipfs://' prefix
+            
+            # Handle fragment identifiers (like #i at the end)
+            if '#' in path:
+                path = path.split("#")[0]
+            
+            # Create full gateway URL
+            full_url = f"{gateway_url}{path}"
+        else:
+            if log_callback:
+                log_callback(f"[WARNING] Skipping non-IPFS URL: {url}")
+            return None
+        
+        # Download the image with cloud-specific timeout
+        if log_callback:
+            log_callback(f"[DOWNLOAD] Retrieving: {url.split('/')[-1] if '/' in url else url}")
+        
+        # Use shorter timeout for cloud environments to avoid hanging
+        timeout = 30 if is_cloud_env else 60
+        
+        response = requests.get(full_url, timeout=timeout)
+        if response.status_code == 200:
+            return response.content
+        else:
+            if log_callback:
+                log_callback(f"[ERROR] Failed to download {url}: HTTP {response.status_code}")
+            return None
+    except requests.exceptions.Timeout:
+        if log_callback:
+            log_callback(f"[TIMEOUT] Download timeout for {url}")
+        return None
+    except requests.exceptions.RequestException as e:
+        if log_callback:
+            log_callback(f"[ERROR] Network error downloading {url}: {str(e)}")
+        return None
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[ERROR] Error downloading {url}: {str(e)}")
+        return None
+
+# Function to create multiple ZIP files from file data
+def create_multiple_zips(file_data_list, max_size_mb=80, log_callback=None):
+    """Create multiple ZIP files if the total size exceeds the limit"""
+    zip_files = []
+    current_zip_files = []
+    current_size = 0
+    max_size_bytes = max_size_mb * 1024 * 1024
+    zip_counter = 1
+    
+    if log_callback:
+        log_callback(f"[ZIP] Creating ZIP files with max size {max_size_mb}MB each")
+    
+    try:
+        for i, (filename, file_data) in enumerate(file_data_list):
+            file_size = len(file_data)
+            
+            # If adding this file would exceed the limit, create a new ZIP
+            if current_size + file_size > max_size_bytes and current_zip_files:
+                # Create ZIP for current batch
+                if log_callback:
+                    log_callback(f"[ZIP] Creating part {zip_counter} with {len(current_zip_files)} files...")
+                
+                zip_path = create_zip_from_data(current_zip_files, f"ipfs_downloads_part_{zip_counter}.zip")
+                if zip_path:
+                    zip_files.append((zip_path, f"Part {zip_counter}"))
+                    if log_callback:
+                        log_callback(f"[ZIP] Created part {zip_counter}: {current_size / (1024*1024):.1f}MB")
+                
+                # Clear memory by removing processed files
+                current_zip_files = []
+                current_size = 0
+                zip_counter += 1
+                
+                # Force garbage collection to free memory
+                import gc
+                gc.collect()
+            
+            # Add file to current batch
+            current_zip_files.append((filename, file_data))
+            current_size += file_size
+            
+            # Progress logging for large collections
+            if i % 20 == 0 and log_callback:
+                log_callback(f"[ZIP] Processed {i+1}/{len(file_data_list)} files for ZIP creation")
+        
+        # Create final ZIP if there are remaining files
+        if current_zip_files:
+            if log_callback:
+                log_callback(f"[ZIP] Creating final part {zip_counter} with {len(current_zip_files)} files...")
+            
+            zip_path = create_zip_from_data(current_zip_files, f"ipfs_downloads_part_{zip_counter}.zip")
+            if zip_path:
+                zip_files.append((zip_path, f"Part {zip_counter}"))
+                if log_callback:
+                    log_callback(f"[ZIP] Created part {zip_counter}: {current_size / (1024*1024):.1f}MB")
+        
+        return zip_files
+        
+    except MemoryError:
+        if log_callback:
+            log_callback(f"[ERROR] Out of memory while creating ZIP files. Try smaller batches or use local version.")
+        return zip_files  # Return what we have so far
+    except Exception as e:
+        if log_callback:
+            log_callback(f"[ERROR] Error creating ZIP files: {str(e)}")
+        return zip_files  # Return what we have so far
+
+# Function to create a ZIP file from file data in memory
+def create_zip_from_data(file_data_list, zip_name):
+    """Create a ZIP file from a list of (filename, data) tuples"""
+    try:
+        zip_path = os.path.join(tempfile.gettempdir(), zip_name)
+        
+        with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for filename, file_data in file_data_list:
+                zipf.writestr(filename, file_data)
+        
+        return zip_path
+    except Exception as e:
+        print(f"Error creating ZIP {zip_name}: {str(e)}")
+        return None
+
+# Function to create download buttons for multiple ZIPs
+def create_multiple_download_buttons(zip_files):
+    """Create download buttons for multiple ZIP files"""
+    if not zip_files:
+        return ""
+    
+    html_content = '<div style="margin-top:20px;">'
+    html_content += '<p class="cyber-label">⬇ DOWNLOAD_YOUR_FILES:</p>'
+    
+    for i, (zip_path, part_name) in enumerate(zip_files):
+        if os.path.exists(zip_path):
+            # Get file size for display
+            file_size = os.path.getsize(zip_path) / (1024 * 1024)  # Convert to MB
+            
+            with open(zip_path, "rb") as f:
+                bytes_data = f.read()
+                b64 = base64.b64encode(bytes_data).decode()
+                download_name = f"cyber_skulls_{part_name.lower().replace(' ', '_')}.zip"
+                
+                button_html = f'''
+                <div style="margin:10px 0;">
+                    <a href="data:application/zip;base64,{b64}" download="{download_name}" style="text-decoration:none;">
+                        <button style="color:#00FF00;background-color:#111111;border:1px solid #00FF00;padding:10px 20px;font-family:'Courier New',monospace;cursor:pointer;width:300px;text-align:left;">
+                            📦 {part_name} ({file_size:.1f} MB)
+                        </button>
+                    </a>
+                </div>
+                '''
+                html_content += button_html
+    
+    html_content += '</div>'
+    return html_content
 
 # Function to detect if running on Streamlit Cloud
 def is_running_on_streamlit_cloud():
@@ -650,50 +813,90 @@ def main():
     st.markdown('<p class="cyber-label">> SELECT_CSV_FILE:</p>', unsafe_allow_html=True)
     uploaded_file = st.file_uploader("Upload CSV File", type=["csv"], label_visibility="collapsed")
     
+    # Preview CSV and estimate size
+    if uploaded_file is not None:
+        try:
+            # Read CSV for preview
+            csv_data = uploaded_file.getvalue().decode('utf-8')
+            df_preview = pd.read_csv(StringIO(csv_data))
+            
+            # Show basic stats
+            st.markdown('<div class="cyber-box">', unsafe_allow_html=True)
+            st.markdown('<h3 class="cyber-header">■ COLLECTION_ANALYSIS</h3>', unsafe_allow_html=True)
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col1:
+                st.markdown(f'<p class="cyber-label">TOTAL_ITEMS: {len(df_preview)}</p>', unsafe_allow_html=True)
+            with col2:
+                # Estimate average file size (typical NFT images are 200KB-2MB)
+                avg_size_mb = 0.8  # Conservative estimate: 800KB average
+                estimated_size = len(df_preview) * avg_size_mb
+                st.markdown(f'<p class="cyber-label">ESTIMATED_SIZE: ~{estimated_size:.0f}MB</p>', unsafe_allow_html=True)
+            with col3:
+                estimated_zips = max(1, int(estimated_size / 80) + (1 if estimated_size % 80 > 0 else 0))
+                st.markdown(f'<p class="cyber-label">ESTIMATED_ZIPS: {estimated_zips}</p>', unsafe_allow_html=True)
+            
+            # Size warnings
+            if is_cloud:
+                if estimated_size > 800:
+                    st.error(f"🚨 **Collection Too Large:** {estimated_size:.0f}MB estimated size exceeds cloud limit (~800MB). Consider using the local desktop version.")
+                elif estimated_size > 400:
+                    st.warning(f"⚠️ **Large Collection:** {estimated_size:.0f}MB estimated. May cause timeouts or memory issues on cloud.")
+                elif estimated_size > 200:
+                    st.info(f"ℹ️ **Medium Collection:** {estimated_size:.0f}MB estimated. Should process fine but may take time.")
+            
+            # Show preview of first few rows
+            if st.checkbox("👁️ PREVIEW_DATA", help="Show first 5 rows of your CSV"):
+                st.markdown('<p class="cyber-label">CSV_PREVIEW:</p>', unsafe_allow_html=True)
+                preview_df = df_preview.head().copy()
+                # Truncate long URLs for display
+                if 'url' in preview_df.columns:
+                    preview_df['url'] = preview_df['url'].apply(lambda x: str(x)[:50] + '...' if len(str(x)) > 50 else str(x))
+                st.dataframe(preview_df, use_container_width=True)
+            
+            st.markdown('</div>', unsafe_allow_html=True)
+            
+        except Exception as e:
+            st.error(f"Error reading CSV file: {str(e)}")
+            uploaded_file = None
+    
     # Download mode selection
     st.markdown('<p class="cyber-label">> SELECT_DOWNLOAD_MODE:</p>', unsafe_allow_html=True)
     
     if is_cloud:
-        # On cloud, prefer ZIP mode and explain limitations
-        st.info("🌐 **Running on Streamlit Cloud:** Files are processed on the server. ZIP mode is recommended for collections under 200MB.")
+        # On cloud, explain the new approach with limitations
+        st.info("🌐 **Streamlit Cloud Mode:** Files are processed in memory and packaged as ZIP downloads. Large collections are split into multiple ZIP files (≤80MB each).")
+        st.warning("⚠️ **Cloud Limitations:**\n- Maximum ~800MB total collection size\n- Memory constraints may cause failures\n- Processing timeout after ~10 minutes")
         download_mode = st.radio(
-            "Download Mode Selection",
-            ["Small Collection ≤200MB (ZIP Download)", "Large Collection (Server Processing)"],
-            help="ZIP mode downloads directly to your computer. Large collection mode processes files on the server (limited usefulness for cloud deployment).",
+            "Processing Mode",
+            ["Standard Processing (Recommended)", "Small Batches (Slower but more stable)"],
+            help="Standard mode processes all files together. Small batches mode is more stable for unreliable connections.",
             label_visibility="collapsed"
         )
     else:
-        # Local mode - show original options
+        # Local mode - show simpler options
+        st.info("💻 **Local Mode:** Better performance and no size limits.")
         download_mode = st.radio(
-            "Download Mode Selection",
-            ["Small Collection ≤200MB (ZIP Download)", "Large Collection (Direct Folder)"],
+            "Processing Mode",
+            ["Standard Processing (Recommended)", "Small Batches (Slower but more stable)"],
+            help="Standard mode is faster. Small batches mode is better for very large collections or unstable connections.",
             label_visibility="collapsed"
         )
     
-    # Output folder selection for direct mode
-    if "Large Collection" in download_mode:
-        st.markdown('<p class="cyber-label">> OUTPUT_FOLDER:</p>', unsafe_allow_html=True)
-        
-        if is_cloud:
-            st.warning("⚠️ **Cloud Limitation:** Files will be saved on the server temporarily and cannot be directly accessed by you. Consider using ZIP mode instead.")
-            default_folder = "/tmp/IPFS_Downloads"
-            st.markdown('<p style="color:#888888;font-size:11px;font-family:Courier;">Note: This is a server path, not your local computer</p>', unsafe_allow_html=True)
-        else:
-            default_folder = os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads")
-        
-        output_folder = st.text_input("Output Folder Path", value=default_folder, 
-                                    label_visibility="collapsed")
-        
-        # Display the selected path
-        st.markdown(f'<div class="folder-path">{output_folder}</div>', unsafe_allow_html=True)
-        
-        # Batch size setting
+    # Batch size setting (only for batch mode)
+    if "Small Batches" in download_mode:
         st.markdown('<p class="cyber-label">> BATCH_SIZE:</p>', unsafe_allow_html=True)
-        batch_size = st.slider("Items per Batch", min_value=10, max_value=200, value=50, step=10, 
+        if is_cloud:
+            max_batch = 15  # Smaller batches for cloud
+            default_batch = 10
+        else:
+            max_batch = 50
+            default_batch = 20
+        batch_size = st.slider("Items per Batch", min_value=5, max_value=max_batch, value=default_batch, step=5, 
                               help="Number of images to process in each batch", 
                               label_visibility="collapsed")
-    
-    st.markdown('</div>', unsafe_allow_html=True)
+    else:
+        batch_size = 1000  # Large batch for standard processing
     
     # Initialize log list in session state if it doesn't exist
     if 'logs' not in st.session_state:
@@ -702,6 +905,8 @@ def main():
         st.session_state.download_complete = False
     if 'download_path' not in st.session_state:
         st.session_state.download_path = None
+    if 'zip_files' not in st.session_state:
+        st.session_state.zip_files = []
     
     # Create system log box
     st.markdown('<div class="cyber-box">', unsafe_allow_html=True)
@@ -728,11 +933,11 @@ def main():
     download_button = st.button("▶ INITIALIZE_DOWNLOAD")
     st.markdown('</div>', unsafe_allow_html=True)
     
-    # Download link area
+    # Download link area - show multiple download buttons if available
     download_link_placeholder = st.empty()
-    if st.session_state.download_complete and st.session_state.download_path and download_mode == "Small Collection ≤200MB (ZIP Download)":
-        download_link = create_download_link(st.session_state.download_path)
-        download_link_placeholder.markdown(download_link, unsafe_allow_html=True)
+    if st.session_state.download_complete and st.session_state.zip_files:
+        download_html = create_multiple_download_buttons(st.session_state.zip_files)
+        download_link_placeholder.markdown(download_html, unsafe_allow_html=True)
     
     # Function to add log messages
     def add_log(message):
@@ -746,27 +951,27 @@ def main():
             st.session_state.logs = []
             st.session_state.download_complete = False
             st.session_state.download_path = None
+            st.session_state.zip_files = []
             
             # Read CSV data
             csv_data = uploaded_file.getvalue().decode('utf-8')
             df = pd.read_csv(StringIO(csv_data))
             
             # Set up the output directory based on download mode
-            if download_mode == "Small Collection ≤200MB (ZIP Download)":
-                # Create a temporary directory for downloads
-                temp_dir = tempfile.mkdtemp()
-                output_dir = temp_dir
-                add_log(f"[SYSTEM] Using temporary directory for downloads")
-            else:
-                # Use the specified output folder
-                output_dir = output_folder
-                os.makedirs(output_dir, exist_ok=True)
-                add_log(f"[SYSTEM] Saving files directly to: {output_dir}")
+            temp_dir = tempfile.mkdtemp()
+            output_dir = temp_dir
+            add_log(f"[SYSTEM] Processing files in memory for download")
             
             # Log start of process
             add_log("[SYSTEM] Initializing download sequence...")
             total_items = len(df)
             add_log(f"[SYSTEM] Found {total_items} items to process")
+            
+            # Early size check and warning
+            estimated_size = total_items * 0.8  # 800KB average estimate
+            if is_cloud and estimated_size > 800:
+                add_log(f"[WARNING] Estimated size ({estimated_size:.0f}MB) may exceed cloud limits")
+                add_log(f"[WARNING] Processing anyway but may fail due to memory constraints")
             
             # Update status
             status_text.markdown('<p class="cyber-label">DOWNLOADING_IMAGES...</p>', unsafe_allow_html=True)
@@ -775,102 +980,65 @@ def main():
             def update_progress(progress_value):
                 progress_bar.progress(progress_value)
             
-            # Process CSV and download images (with or without batches)
-            if download_mode == "Small Collection ≤200MB (ZIP Download)":
-                # Process without batches for small collections
-                success_count, fail_count, downloaded_files = process_csv_data_in_batches(
-                    df, output_dir, gateway_url, 
-                    batch_size=total_items,  # Use entire dataset as one batch
-                    progress_callback=update_progress,
-                    log_callback=add_log,
-                    is_cloud_env=is_cloud
-                )
-                
-                # Check total size of downloaded files before creating zip
-                total_size = 0
-                for file_path in downloaded_files:
-                    if os.path.exists(file_path):
-                        total_size += os.path.getsize(file_path)
-                
-                # Convert to MB for logging
-                total_size_mb = total_size / (1024 * 1024)
-                add_log(f"[SIZE_CHECK] Total downloaded files: {total_size_mb:.1f} MB")
-                
-                # If total size exceeds 180MB (safety margin), switch to folder mode
-                if total_size > 180 * 1024 * 1024:  # 180MB in bytes
-                    add_log(f"[WARNING] Collection size ({total_size_mb:.1f} MB) exceeds safe download limit")
-                    add_log(f"[SYSTEM] Switching to folder mode to prevent browser issues")
-                    
-                    # Move files to user downloads folder instead of creating zip
-                    safe_output_dir = os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads_Large")
-                    os.makedirs(safe_output_dir, exist_ok=True)
-                    
-                    # Move files to the safe directory
-                    moved_count = 0
-                    for file_path in downloaded_files:
-                        if os.path.exists(file_path):
-                            filename = os.path.basename(file_path)
-                            new_path = os.path.join(safe_output_dir, filename)
-                            try:
-                                import shutil
-                                shutil.move(file_path, new_path)
-                                moved_count += 1
-                            except Exception as e:
-                                add_log(f"[ERROR] Failed to move {filename}: {str(e)}")
-                    
-                    add_log(f"[SYSTEM] Moved {moved_count} files to: {safe_output_dir}")
-                    
-                    # Display folder path instead of download link
-                    folder_link = f'<div style="margin-top:20px;text-align:center;"><p class="cyber-label">COLLECTION TOO LARGE - FILES SAVED TO FOLDER:</p><div class="folder-path">{safe_output_dir}</div></div>'
-                    download_link_placeholder.markdown(folder_link, unsafe_allow_html=True)
-                    
+            # Process CSV and download images to memory
+            success_count, fail_count, downloaded_files, file_data_list = process_csv_data_in_batches(
+                df, output_dir, gateway_url, 
+                batch_size=batch_size if "Small Batches" in download_mode else total_items,
+                progress_callback=update_progress,
+                log_callback=add_log,
+                is_cloud_env=is_cloud
+            )
+            
+            if not file_data_list:
+                add_log("[ERROR] No files were successfully downloaded")
+                status_text.markdown('<p class="cyber-label">DOWNLOAD_FAILED</p>', unsafe_allow_html=True)
+                return
+            
+            # Calculate total size and memory check
+            total_size = sum(len(data) for _, data in file_data_list)
+            total_size_mb = total_size / (1024 * 1024)
+            add_log(f"[SIZE_CHECK] Total downloaded files: {total_size_mb:.1f} MB")
+            
+            # Memory warning for cloud
+            if is_cloud and total_size_mb > 600:
+                add_log(f"[MEMORY_WARNING] Large dataset in memory ({total_size_mb:.1f}MB)")
+                add_log(f"[MEMORY_WARNING] ZIP creation may fail due to memory limits")
+            
+            # Determine how to package the files
+            if total_size_mb <= 80:
+                # Single ZIP file
+                add_log(f"[ZIP] Creating single ZIP file ({total_size_mb:.1f} MB)")
+                zip_path = create_zip_from_data(file_data_list, "cyber_skulls_collection.zip")
+                if zip_path:
+                    st.session_state.zip_files = [(zip_path, "Complete Collection")]
+                    add_log(f"[SUCCESS] Created ZIP file with {success_count} images")
                 else:
-                    # Safe to create zip file
-                    add_log(f"[SYSTEM] Collection size is safe for ZIP download")
-                    zip_filename = os.path.join(tempfile.gettempdir(), "ipfs_downloads.zip")
-                    
-                    with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-                        for file_path in downloaded_files:
-                            if os.path.exists(file_path):
-                                zipf.write(file_path, arcname=os.path.basename(file_path))
-                    
-                    # Check final zip size
-                    if os.path.exists(zip_filename):
-                        zip_size = os.path.getsize(zip_filename)
-                        zip_size_mb = zip_size / (1024 * 1024)
-                        add_log(f"[ZIP_CREATED] Zip file size: {zip_size_mb:.1f} MB")
-                        
-                        if zip_size > 190 * 1024 * 1024:  # Final safety check
-                            add_log(f"[ERROR] Zip file too large for download ({zip_size_mb:.1f} MB)")
-                            os.remove(zip_filename)
-                            folder_link = f'<div style="margin-top:20px;text-align:center;"><p class="cyber-label">ZIP TOO LARGE - CHECK YOUR DOWNLOADS FOLDER</p></div>'
-                            download_link_placeholder.markdown(folder_link, unsafe_allow_html=True)
-                        else:
-                            # Set session state for download
-                            st.session_state.download_path = zip_filename
-                            add_log(f"[SYSTEM] Created zip archive with {success_count} images")
-                            
-                            # Display download link for zip mode
-                            download_link = create_download_link(st.session_state.download_path)
-                            download_link_placeholder.markdown(download_link, unsafe_allow_html=True)
-                
+                    add_log(f"[ERROR] Failed to create ZIP file - possibly too large for memory")
+                    status_text.markdown('<p class="cyber-label">ZIP_CREATION_FAILED</p>', unsafe_allow_html=True)
+                    return
             else:
-                # Process with batches for large collections
-                success_count, fail_count, _ = process_csv_data_in_batches(
-                    df, output_dir, gateway_url, 
-                    batch_size=batch_size,
-                    progress_callback=update_progress,
-                    log_callback=add_log,
-                    is_cloud_env=is_cloud
-                )
+                # Multiple ZIP files
+                add_log(f"[ZIP] Collection too large for single download, creating multiple ZIP files")
                 
-                # Add info about the output folder
-                add_log(f"[SYSTEM] Saved {success_count} images to folder: {output_dir}")
+                # Clear some memory before creating ZIPs
+                import gc
+                gc.collect()
                 
-                # Display folder path for direct mode
-                add_log(f"[REPORT] Output location: {output_dir}")
-                folder_link = f'<div style="margin-top:20px;text-align:center;"><p class="cyber-label">FILES SAVED TO FOLDER:</p><div class="folder-path">{output_dir}</div></div>'
-                download_link_placeholder.markdown(folder_link, unsafe_allow_html=True)
+                zip_files = create_multiple_zips(file_data_list, max_size_mb=80, log_callback=add_log)
+                st.session_state.zip_files = zip_files
+                
+                if zip_files:
+                    add_log(f"[SUCCESS] Created {len(zip_files)} ZIP files with {success_count} images total")
+                else:
+                    add_log(f"[ERROR] Failed to create any ZIP files - likely memory exhaustion")
+                    add_log(f"[SUGGESTION] Try using smaller batches or the local desktop version")
+                    status_text.markdown('<p class="cyber-label">MEMORY_EXHAUSTED</p>', unsafe_allow_html=True)
+                    return
+            
+            # Display download buttons
+            if st.session_state.zip_files:
+                download_html = create_multiple_download_buttons(st.session_state.zip_files)
+                download_link_placeholder.markdown(download_html, unsafe_allow_html=True)
             
             # Complete the progress
             progress_bar.progress(1.0)
@@ -880,10 +1048,17 @@ def main():
             add_log("\n[REPORT] Download Summary:")
             add_log(f"[REPORT] Images successfully downloaded: {success_count}")
             add_log(f"[REPORT] Images failed to download: {fail_count}")
+            if st.session_state.zip_files:
+                add_log(f"[REPORT] ZIP files created: {len(st.session_state.zip_files)}")
+                add_log(f"[REPORT] Click the download buttons above to get your files")
             
             # Set download complete
             st.session_state.download_complete = True
             
+        except MemoryError:
+            add_log(f"[CRITICAL] Out of memory! Collection too large for cloud processing")
+            add_log(f"[SOLUTION] Use the local desktop version for large collections")
+            status_text.markdown('<p class="cyber-label">MEMORY_ERROR</p>', unsafe_allow_html=True)
         except Exception as e:
             add_log(f"[ERROR] Critical error during download: {str(e)}")
             status_text.markdown('<p class="cyber-label">SYSTEM_ERROR</p>', unsafe_allow_html=True)
@@ -893,20 +1068,7 @@ def main():
         if uploaded_file is None:
             status_text.markdown('<p class="cyber-label">ERROR: NO_CSV_FILE_SELECTED</p>', unsafe_allow_html=True)
             add_log("[ERROR] Please select a CSV file")
-        elif "Large Collection" in download_mode and not output_folder:
-            status_text.markdown('<p class="cyber-label">ERROR: NO_OUTPUT_FOLDER_SELECTED</p>', unsafe_allow_html=True)
-            add_log("[ERROR] Please specify an output folder")
         else:
-            # Add cloud-specific warnings
-            if is_cloud:
-                add_log("[CLOUD] Running on Streamlit Cloud - some limitations apply:")
-                add_log("[CLOUD] • Shorter timeouts (30s per file)")
-                add_log("[CLOUD] • Smaller batch sizes (max 10 items)")
-                add_log("[CLOUD] • Memory constraints may cause failures")
-                if "Large Collection" in download_mode:
-                    add_log("[CLOUD] • Files saved on server only - not accessible to you")
-                    add_log("[CLOUD] • Consider using ZIP mode instead")
-            
             # Run download process
             process_download()
     

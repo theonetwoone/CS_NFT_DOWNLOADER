@@ -1,6 +1,6 @@
 # Cyber Skulls NFT Downloader
 
-🔗 **Live App:** [https://cs-nft-downloader.streamlit.app](https://cs-nft-downloader.streamlit.app) *(kommer snart)*
+🔗 **Live App:** [https://cs-nft-downloader.streamlit.app](https://cs-nft-downloader.streamlit.app)
 
 🔗 **GitHub Repository:** [https://github.com/theonetwoone/CS_NFT_DOWNLOADER](https://github.com/theonetwoone/CS_NFT_DOWNLOADER)
 
