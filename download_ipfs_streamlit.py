@@ -587,19 +587,19 @@ def main():
     
     # IPFS Gateway setting
     st.markdown('<p class="cyber-label">> IPFS_GATEWAY:</p>', unsafe_allow_html=True)
-    gateway_url = st.text_input("IPFS Gateway", value="https://ipfs.io/ipfs/", 
+    gateway_url = st.text_input("IPFS Gateway URL", value="https://ipfs.io/ipfs/", 
                                label_visibility="collapsed")
     if not gateway_url.endswith('/'):
         gateway_url += '/'
     
     # CSV file upload
     st.markdown('<p class="cyber-label">> SELECT_CSV_FILE:</p>', unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("CSV File", type=["csv"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader("Upload CSV File", type=["csv"], label_visibility="collapsed")
     
     # Download mode selection
     st.markdown('<p class="cyber-label">> SELECT_DOWNLOAD_MODE:</p>', unsafe_allow_html=True)
     download_mode = st.radio(
-        "Download Mode",
+        "Download Mode Selection",
         ["Small Collection >200mb total (ZIP Download)", "Large Collection (Direct Folder)"],
         label_visibility="collapsed"
     )
@@ -607,7 +607,7 @@ def main():
     # Output folder selection for direct mode
     if download_mode == "Large Collection (Direct Folder)":
         st.markdown('<p class="cyber-label">> OUTPUT_FOLDER:</p>', unsafe_allow_html=True)
-        output_folder = st.text_input("Output Folder", value=os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads"), 
+        output_folder = st.text_input("Output Folder Path", value=os.path.join(os.path.expanduser("~"), "Downloads", "IPFS_Downloads"), 
                                     label_visibility="collapsed")
         
         # Display the selected path
@@ -615,7 +615,7 @@ def main():
         
         # Batch size setting
         st.markdown('<p class="cyber-label">> BATCH_SIZE:</p>', unsafe_allow_html=True)
-        batch_size = st.slider("Batch Size", min_value=10, max_value=200, value=50, step=10, 
+        batch_size = st.slider("Items per Batch", min_value=10, max_value=200, value=50, step=10, 
                               help="Number of images to process in each batch", 
                               label_visibility="collapsed")
     
