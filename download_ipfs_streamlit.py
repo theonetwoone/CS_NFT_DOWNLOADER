@@ -358,7 +358,7 @@ def create_local_download_link():
     return None
 
 # Function to download an image from IPFS
-def download_image(url, output_path, gateway_url, log_callback=None):
+def download_image(url, output_path, gateway_url, log_callback=None, is_cloud_env=False):
     try:
         # Parse IPFS URL to extract CID
         if url.startswith("ipfs://"):
@@ -376,11 +376,14 @@ def download_image(url, output_path, gateway_url, log_callback=None):
                 log_callback(f"[WARNING] Skipping non-IPFS URL: {url}")
             return False
         
-        # Download the image
+        # Download the image with cloud-specific timeout
         if log_callback:
             log_callback(f"[DOWNLOAD] Retrieving: {os.path.basename(output_path)}")
         
-        response = requests.get(full_url, timeout=60)
+        # Use shorter timeout for cloud environments to avoid hanging
+        timeout = 30 if is_cloud_env else 60
+        
+        response = requests.get(full_url, timeout=timeout)
         if response.status_code == 200:
             # Ensure the directory exists
             os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -394,6 +397,14 @@ def download_image(url, output_path, gateway_url, log_callback=None):
             if log_callback:
                 log_callback(f"[ERROR] Failed to download {url}: HTTP {response.status_code}")
             return False
+    except requests.exceptions.Timeout:
+        if log_callback:
+            log_callback(f"[TIMEOUT] Download timeout for {url}")
+        return False
+    except requests.exceptions.RequestException as e:
+        if log_callback:
+            log_callback(f"[ERROR] Network error downloading {url}: {str(e)}")
+        return False
     except Exception as e:
         if log_callback:
             log_callback(f"[ERROR] Error downloading {url}: {str(e)}")
@@ -401,7 +412,7 @@ def download_image(url, output_path, gateway_url, log_callback=None):
 
 # Process CSV data for downloading in batches
 def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50, 
-                               progress_callback=None, log_callback=None):
+                               progress_callback=None, log_callback=None, is_cloud_env=False):
     try:
         # Check if required columns exist
         required_columns = ["name", "unit-name", "url"]
@@ -410,6 +421,13 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
                 if log_callback:
                     log_callback(f"[ERROR] CSV is missing required column: {col}")
                 return 0, 0, []
+        
+        # Adjust batch size for cloud environments
+        if is_cloud_env:
+            # Use smaller batches in cloud to avoid timeouts
+            batch_size = min(batch_size, 10)
+            if log_callback:
+                log_callback(f"[CLOUD] Adjusted batch size to {batch_size} for cloud environment")
         
         # Track success and failure counts
         success_count = 0
@@ -466,21 +484,27 @@ def process_csv_data_in_batches(df, output_dir, gateway_url, batch_size=50,
                 
                 output_path = os.path.join(output_dir, f"{safe_name}{extension}")
                 
-                # Download the image
-                success = download_image(url, output_path, gateway_url, log_callback)
+                # Download the image with cloud environment flag
+                success = download_image(url, output_path, gateway_url, log_callback, is_cloud_env)
                 if success:
                     success_count += 1
                     downloaded_files.append(output_path)
                 else:
                     fail_count += 1
+                    # In cloud environment, add more aggressive error recovery
+                    if is_cloud_env and fail_count > 3:
+                        if log_callback:
+                            log_callback(f"[CLOUD_WARNING] Multiple failures detected. This may be due to cloud resource limits.")
             
             # Log batch completion with current stats
             if log_callback:
                 log_callback(f"[BATCH_COMPLETE] Batch {batch_start//batch_size + 1} finished. Success: {success_count}, Failed: {fail_count}")
-                log_callback(f"[SYSTEM] Files saved to local folder: {output_dir}")
+                if not is_cloud_env:
+                    log_callback(f"[SYSTEM] Files saved to local folder: {output_dir}")
             
-            # Allow a short pause between batches to free up resources
-            time.sleep(0.2)
+            # Allow a longer pause between batches in cloud environment
+            pause_time = 1.0 if is_cloud_env else 0.2
+            time.sleep(pause_time)
         
         if log_callback:
             log_callback(f"[ALL_BATCHES_COMPLETE] All {total_count} items processed")
@@ -758,7 +782,8 @@ def main():
                     df, output_dir, gateway_url, 
                     batch_size=total_items,  # Use entire dataset as one batch
                     progress_callback=update_progress,
-                    log_callback=add_log
+                    log_callback=add_log,
+                    is_cloud_env=is_cloud
                 )
                 
                 # Check total size of downloaded files before creating zip
@@ -835,7 +860,8 @@ def main():
                     df, output_dir, gateway_url, 
                     batch_size=batch_size,
                     progress_callback=update_progress,
-                    log_callback=add_log
+                    log_callback=add_log,
+                    is_cloud_env=is_cloud
                 )
                 
                 # Add info about the output folder
@@ -867,10 +893,20 @@ def main():
         if uploaded_file is None:
             status_text.markdown('<p class="cyber-label">ERROR: NO_CSV_FILE_SELECTED</p>', unsafe_allow_html=True)
             add_log("[ERROR] Please select a CSV file")
-        elif download_mode == "Large Collection (Direct Folder)" and not output_folder:
+        elif "Large Collection" in download_mode and not output_folder:
             status_text.markdown('<p class="cyber-label">ERROR: NO_OUTPUT_FOLDER_SELECTED</p>', unsafe_allow_html=True)
             add_log("[ERROR] Please specify an output folder")
         else:
+            # Add cloud-specific warnings
+            if is_cloud:
+                add_log("[CLOUD] Running on Streamlit Cloud - some limitations apply:")
+                add_log("[CLOUD] • Shorter timeouts (30s per file)")
+                add_log("[CLOUD] • Smaller batch sizes (max 10 items)")
+                add_log("[CLOUD] • Memory constraints may cause failures")
+                if "Large Collection" in download_mode:
+                    add_log("[CLOUD] • Files saved on server only - not accessible to you")
+                    add_log("[CLOUD] • Consider using ZIP mode instead")
+            
             # Run download process
             process_download()
     
